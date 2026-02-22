@@ -40,7 +40,7 @@ class AralaBot(discord.Client):
             if latest_match and latest_match != self.last_match_id:
                 self.last_match_id = latest_match
                 self.save_last_match_id(latest_match)  # Save to file
-                kda, score, damage, champ, totalMinionsKilled, victory, time_dead, kill_participation, game_mode, lane = get_match_stats(puuid, latest_match)
+                kda, score, damage, champ, totalMinionsKilled, victory, time_dead, kill_participation, game_mode, lane, time_ago = get_match_stats(puuid, latest_match)
                 mention_user_id = os.getenv('MENTION_USER_ID')
                 mention = f"<@{mention_user_id}>" if mention_user_id else self.summoner_name
                 message = (
@@ -54,7 +54,8 @@ class AralaBot(discord.Client):
                     f"Damage to Champions: {damage}\n"
                     f"Total Minions Killed: {totalMinionsKilled}\n"
                     f"Total Time Spent Dead: {time_dead} seconds\n"
-                    f"Kill Participation: {kill_participation}%"
+                    f"Kill Participation: {kill_participation}%\n"
+                    f"Last played: {time_ago}"
                 )
                 for channel in channels:
                     if channel:

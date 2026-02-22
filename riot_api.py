@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 
 GAME_NAME = os.getenv('GAME_NAME', 'ArsyQuan')
@@ -36,6 +37,28 @@ def get_match_stats(puuid, match_id):
     player_team_id = None
     player_stats = None
     team_kills = 0
+    
+    # Get match end timestamp (in milliseconds)
+    end_timestamp = match_data.get('info', {}).get('gameEndTimestamp')
+    if not end_timestamp:
+        # If not present, estimate using start + duration
+        start_timestamp = match_data.get('info', {}).get('gameStartTimestamp', 0)
+        duration = match_data.get('info', {}).get('gameDuration', 0)
+        end_timestamp = start_timestamp + (duration * 1000)
+
+    # Convert to seconds
+    end_time = end_timestamp / 1000
+    now = time.time()
+    seconds_ago = int(now - end_time)
+    # Format as "X hours/minutes ago"
+    if seconds_ago < 60:
+        time_ago = f"{seconds_ago} seconds ago"
+    elif seconds_ago < 3600:
+        minutes = seconds_ago // 60
+        time_ago = f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    else:
+        hours = seconds_ago // 3600
+        time_ago = f"{hours} hour{'s' if hours != 1 else ''} ago"
 
     for participant in match_data.get('info', {}).get('participants', []):
         if participant['puuid'] == puuid:
@@ -44,7 +67,7 @@ def get_match_stats(puuid, match_id):
             break
 
     if not player_stats:
-        return None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None, None, None
 
     for participant in match_data.get('info', {}).get('participants', []):
         if participant['teamId'] == player_team_id:
@@ -75,4 +98,4 @@ def get_match_stats(puuid, match_id):
 
 
 
-    return kda, score, damage, champ, totalMinionsKilled, victory, time_dead, kill_participation, game_mode, lane
+    return kda, score, damage, champ, totalMinionsKilled, victory, time_dead, kill_participation, game_mode, lane, time_ago
