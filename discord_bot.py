@@ -1,7 +1,11 @@
 import os
 import discord
 import asyncio
-from riot_api import get_puuid, get_latest_match_id, get_match_stats
+from datetime import datetime
+from riot_api import get_puuid, get_latest_match_id, get_match_stats, get_lane_comparison, generate_lane_roast
+
+def get_current_time():
+    return datetime.now().strftime("%H:%M:%S")
 
 class AralaBot(discord.Client):
     def __init__(self, channel_ids, summoner_name, *args, **kwargs):
@@ -40,7 +44,23 @@ class AralaBot(discord.Client):
             if latest_match and latest_match != self.last_match_id:
                 self.last_match_id = latest_match
                 self.save_last_match_id(latest_match)  # Save to file
-                kda, score, damage, champ, totalMinionsKilled, victory, time_dead, kill_participation, game_mode, lane, time_ago = get_match_stats(puuid, latest_match)
+                
+                # Get match data
+                import requests
+                RIOT_API_KEY = os.getenv('RIOT_API_KEY')
+                match_url = f'https://europe.api.riotgames.com/lol/match/v5/matches/{latest_match}'
+                headers = {'X-Riot-Token': RIOT_API_KEY}
+                response = requests.get(match_url, headers=headers)
+                match_data = response.json()
+                
+                kda, score, damage, champ, totalMinionsKilled, victory, time_dead, kill_participation, game_mode, lane, time_ago, gold_per_minute, damage_per_minute, vision_score, largest_spree, cc_time, wards_placed, wards_killed, neutral_minions, lane_minions, total_cs = get_match_stats(puuid, latest_match)
+                
+                # Get lane comparison and roast
+                lane_comp = get_lane_comparison(puuid, match_data)
+                lane_roast = ""
+                if lane_comp:
+                    lane_roast = f"\n\n{generate_lane_roast(lane_comp)}"
+                
                 mention_user_id = os.getenv('MENTION_USER_ID')
                 mention = f"<@{mention_user_id}>" if mention_user_id else self.summoner_name
                 message = (
@@ -48,16 +68,28 @@ class AralaBot(discord.Client):
                     f"Result: {victory}\n"
                     f"Game Mode: {game_mode}\n"
                     f"Lane: {lane}\n"
-                    f"Champion: {champ}\n"
+                    f"Champion: {champ}\n\n"
+                    f"**━━ COMBAT STATS ━━**\n"
                     f"KDA: {kda}\n"
                     f"Level: {score}\n"
-                    f"Damage to Champions: {damage}\n"
-                    f"Total Minions Killed: {totalMinionsKilled}\n"
-                    f"Total Time Spent Dead: {time_dead} seconds\n"
                     f"Kill Participation: {kill_participation}%\n"
+                    f"Best Streak: {largest_spree} kills\n\n"
+                    f"**━━ DAMAGE & ECONOMY ━━**\n"
+                    f"Damage to Champions: {damage:,}\n"
+                    f"DPM (Damage/Min): {damage_per_minute}\n"
+                    f"Gold/Min: {gold_per_minute}\n\n"
+                    f"**━━ RESOURCE CONTROL ━━**\n"
+                    f"Jungle CS: {neutral_minions}\n"
+                    f"Lane CS: {lane_minions}\n"
+                    f"Vision Score: {vision_score}\n"
+                    f"Wards Placed: {wards_placed} | Destroyed: {wards_killed}\n"
+                    f"CC Time: {cc_time}s\n\n"
+                    f"**━━ SURVIVAL ━━**\n"
+                    f"Time Dead: {time_dead}s\n"
                     f"Last played: {time_ago}"
+                    f"{lane_roast}"
                 )
                 for channel in channels:
                     if channel:
                         await channel.send(message)
-            await asyncio.sleep(30)
+            await asyncio.sleep(10)
