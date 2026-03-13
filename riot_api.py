@@ -3,6 +3,24 @@ import time
 import requests
 import random
 
+
+def correct_lane_from_cs(api_lane, neutral_cs, lane_cs, role):
+    """
+    Correct lane classification based on minion kills.
+    Riot API sometimes misclassifies laners as junglers.
+    """
+    if api_lane == 'JUNGLE' and neutral_cs < 15 and lane_cs > 50:
+        # Clear signs of a laner, not a jungler - classify by role
+        if role == 'SOLO':
+            return 'TOP'
+        elif role == 'CARRY':
+            return 'BOTTOM'
+        elif role == 'SUPPORT':
+            return 'BOTTOM'
+        else:
+            return 'TOP'
+    return api_lane
+
 GAME_NAME = os.getenv('GAME_NAME', 'ArsyQuan')
 TAG_LINE = os.getenv('TAG_LINE', 'EUW')
 REGION = os.getenv('REGION', 'euw1')
@@ -26,6 +44,60 @@ def get_latest_match_id(puuid):
         return matches[0]
     else:
         return None
+
+def get_champion_winrate(puuid, champion_name, current_match_won, current_match_id=None):
+    """
+    Get user's recent win rate on a specific champion in ranked games.
+    Checks last 20 ranked matches per queue (Solo/Duo queue=420 + Flex queue=440).
+    The current match result is seeded directly since it may not be indexed yet.
+    current_match_id is excluded from the history loop to prevent double-counting.
+    Returns a formatted string or None if no ranked games found on that champ.
+    """
+    RIOT_API_KEY = os.getenv('RIOT_API_KEY')
+    headers = {'X-Riot-Token': RIOT_API_KEY}
+
+    match_ids = []
+
+    # Fetch ranked solo/duo and flex match IDs (20 each, up to 40 total)
+    for queue_id in [420, 440]:  # 420 = Ranked Solo/Duo, 440 = Ranked Flex
+        url = f'https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids?queue={queue_id}&start=0&count=20'
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            match_ids.extend(response.json())
+
+    # Deduplicate (preserve order)
+    seen = set()
+    unique_ids = []
+    for m in match_ids:
+        if m not in seen:
+            seen.add(m)
+            unique_ids.append(m)
+
+    # Start with the current match result (handles API indexing delay)
+    wins = 1 if current_match_won else 0
+    total = 1
+
+    for match_id in unique_ids:
+        # Skip current match - already seeded above to avoid double-counting
+        if current_match_id and match_id == current_match_id:
+            continue
+        url = f'https://europe.api.riotgames.com/lol/match/v5/matches/{match_id}'
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            continue
+        data = response.json()
+        for participant in data.get('info', {}).get('participants', []):
+            if participant['puuid'] == puuid:
+                if participant.get('championName') == champion_name:
+                    total += 1
+                    if participant.get('win', False):
+                        wins += 1
+                break  # found our player, move to next match
+
+    losses = total - wins
+    win_rate = round((wins / total) * 100)
+    return f"{wins}W / {losses}L ({win_rate}%) in last {total} ranked game{'s' if total != 1 else ''}"
+
 
 def get_match_stats(puuid, match_id):
     RIOT_API_KEY = os.getenv('RIOT_API_KEY')  # <-- Move inside the function
@@ -97,6 +169,12 @@ def get_match_stats(puuid, match_id):
         #role = "N/A"
     lane = player_stats.get('lane', 'Unknown')
     
+    # Correct lane classification if misclassified by API
+    neutral_minions = player_stats.get('neutralMinionsKilled', 0)
+    lane_minions = player_stats.get('totalMinionsKilled', 0)
+    player_role = player_stats.get('role', 'SOLO')
+    lane = correct_lane_from_cs(lane, neutral_minions, lane_minions, player_role)
+    
     # Additional performance stats with League terminology
     gold_per_minute = round(player_stats.get('challenges', {}).get('goldPerMinute', 0), 1)
     damage_per_minute = round(player_stats.get('challenges', {}).get('damagePerMinute', 0), 1)
@@ -105,11 +183,12 @@ def get_match_stats(puuid, match_id):
     cc_time = player_stats.get('totalTimeCCDealt', 0)
     wards_placed = player_stats.get('wardsPlaced', 0)
     wards_killed = player_stats.get('wardsKilled', 0)
+    control_wards = player_stats.get('detectorWardsPlaced', 0)
     neutral_minions = player_stats.get('neutralMinionsKilled', 0)
     lane_minions = player_stats.get('totalMinionsKilled', 0)
     total_cs = neutral_minions + lane_minions
 
-    return kda, score, damage, champ, totalMinionsKilled, victory, time_dead, kill_participation, game_mode, lane, time_ago, gold_per_minute, damage_per_minute, vision_score, largest_spree, cc_time, wards_placed, wards_killed, neutral_minions, lane_minions, total_cs
+    return kda, score, damage, champ, totalMinionsKilled, victory, time_dead, kill_participation, game_mode, lane, time_ago, gold_per_minute, damage_per_minute, vision_score, largest_spree, cc_time, wards_placed, wards_killed, control_wards, neutral_minions, lane_minions, total_cs
 
 
 def get_lane_comparison(puuid, match_data):
@@ -121,11 +200,15 @@ def get_lane_comparison(puuid, match_data):
     user_lane = None
     user_stats = None
     
-    # Get player info
+    # Get player info and correct their lane
     for participant in match_data.get('info', {}).get('participants', []):
         if participant['puuid'] == puuid:
             player_team_id = participant['teamId']
-            user_lane = participant.get('lane', 'Unknown')
+            api_lane = participant.get('lane', 'Unknown')
+            neutral_cs = participant.get('neutralMinionsKilled', 0)
+            lane_cs = participant.get('totalMinionsKilled', 0)
+            role = participant.get('role', 'SOLO')
+            user_lane = correct_lane_from_cs(api_lane, neutral_cs, lane_cs, role)
             user_stats = participant
             break
     
@@ -135,8 +218,16 @@ def get_lane_comparison(puuid, match_data):
     # Find enemy laner (opposite team, same lane)
     enemy_candidates = []
     for participant in match_data.get('info', {}).get('participants', []):
-        if participant['teamId'] != player_team_id and participant.get('lane', 'Unknown') == user_lane:
-            enemy_candidates.append(participant)
+        if participant['teamId'] != player_team_id:
+            # Correct enemy lane too
+            api_lane = participant.get('lane', 'Unknown')
+            neutral_cs = participant.get('neutralMinionsKilled', 0)
+            lane_cs = participant.get('totalMinionsKilled', 0)
+            role = participant.get('role', 'SOLO')
+            corrected_lane = correct_lane_from_cs(api_lane, neutral_cs, lane_cs, role)
+            
+            if corrected_lane == user_lane:
+                enemy_candidates.append(participant)
     
     if not enemy_candidates:
         return None

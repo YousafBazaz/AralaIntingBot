@@ -2,7 +2,7 @@ import os
 import discord
 import asyncio
 from datetime import datetime
-from riot_api import get_puuid, get_latest_match_id, get_match_stats, get_lane_comparison, generate_lane_roast
+from riot_api import get_puuid, get_latest_match_id, get_match_stats, get_lane_comparison, generate_lane_roast, get_champion_winrate
 
 def get_current_time():
     return datetime.now().strftime("%H:%M:%S")
@@ -53,8 +53,13 @@ class AralaBot(discord.Client):
                 response = requests.get(match_url, headers=headers)
                 match_data = response.json()
                 
-                kda, score, damage, champ, totalMinionsKilled, victory, time_dead, kill_participation, game_mode, lane, time_ago, gold_per_minute, damage_per_minute, vision_score, largest_spree, cc_time, wards_placed, wards_killed, neutral_minions, lane_minions, total_cs = get_match_stats(puuid, latest_match)
+                kda, score, damage, champ, totalMinionsKilled, victory, time_dead, kill_participation, game_mode, lane, time_ago, gold_per_minute, damage_per_minute, vision_score, largest_spree, cc_time, wards_placed, wards_killed, control_wards, neutral_minions, lane_minions, total_cs = get_match_stats(puuid, latest_match)
                 
+                # Get champion win rate (ranked only)
+                current_match_won = victory == "Victory"
+                champ_winrate = get_champion_winrate(puuid, champ, current_match_won, latest_match)
+                champ_winrate_line = f"\nChamp Win Rate: {champ_winrate}" if champ_winrate else ""
+
                 # Get lane comparison and roast
                 lane_comp = get_lane_comparison(puuid, match_data)
                 lane_roast = ""
@@ -68,7 +73,7 @@ class AralaBot(discord.Client):
                     f"Result: {victory}\n"
                     f"Game Mode: {game_mode}\n"
                     f"Lane: {lane}\n"
-                    f"Champion: {champ}\n\n"
+                    f"Champion: {champ}{champ_winrate_line}\n\n"
                     f"**━━ COMBAT STATS ━━**\n"
                     f"KDA: {kda}\n"
                     f"Level: {score}\n"
@@ -82,7 +87,8 @@ class AralaBot(discord.Client):
                     f"Jungle CS: {neutral_minions}\n"
                     f"Lane CS: {lane_minions}\n"
                     f"Vision Score: {vision_score}\n"
-                    f"Wards Placed: {wards_placed} | Destroyed: {wards_killed}\n"
+                    f"Wards: {wards_placed} Placed | {wards_killed} Destroyed\n"
+                    f"Control Wards: {control_wards} Placed\n"
                     f"CC Time: {cc_time}s\n\n"
                     f"**━━ SURVIVAL ━━**\n"
                     f"Time Dead: {time_dead}s\n"
