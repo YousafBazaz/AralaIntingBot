@@ -29,7 +29,7 @@ def get_puuid():
     RIOT_API_KEY = os.getenv('RIOT_API_KEY')  # <-- Move inside the function
     url = f'https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{GAME_NAME}/{TAG_LINE}'
     headers = {'X-Riot-Token': RIOT_API_KEY}
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=30)
     print("Account API response:", response.json())
     return response.json().get('puuid')
 
@@ -37,7 +37,7 @@ def get_latest_match_id(puuid):
     RIOT_API_KEY = os.getenv('RIOT_API_KEY')  # <-- Move inside the function
     match_url = f'https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids?start=0&count=1'
     headers = {'X-Riot-Token': RIOT_API_KEY}
-    response = requests.get(match_url, headers=headers)
+    response = requests.get(match_url, headers=headers, timeout=30)
     matches = response.json()
     print("Match API response:", matches)
     if isinstance(matches, list) and matches:
@@ -45,44 +45,53 @@ def get_latest_match_id(puuid):
     else:
         return None
 
-def get_champion_winrate(puuid, champion_name, current_match_won, current_match_id=None):
+def get_champion_winrate(puuid, champion_name, current_match_won, current_match_id=None, current_match_queue_id=None):
     """
-    Get user's recent win rate on a specific champion in ranked games.
-    Checks last 20 ranked matches per queue (Solo/Duo queue=420 + Flex queue=440).
-    The current match result is seeded directly since it may not be indexed yet.
-    current_match_id is excluded from the history loop to prevent double-counting.
+    Get user's ranked win rate on a specific champion.
+    Aggregates ranked history (Solo/Duo queue=420 + Flex queue=440) using pagination.
+    If the current ranked match is not yet indexed, it is seeded once to avoid stale output.
     Returns a formatted string or None if no ranked games found on that champ.
     """
     RIOT_API_KEY = os.getenv('RIOT_API_KEY')
     headers = {'X-Riot-Token': RIOT_API_KEY}
 
-    match_ids = []
+    ranked_queues = [420, 440]
+    is_current_ranked = current_match_queue_id in ranked_queues
 
-    # Fetch ranked solo/duo and flex match IDs (20 each, up to 40 total)
-    for queue_id in [420, 440]:  # 420 = Ranked Solo/Duo, 440 = Ranked Flex
-        url = f'https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids?queue={queue_id}&start=0&count=20'
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            match_ids.extend(response.json())
+    match_ids = []
+    page_size = 100
+    max_matches_per_queue = 1000
+
+    # Fetch ranked solo/duo and flex match IDs with pagination
+    for queue_id in ranked_queues:
+        start = 0
+        while start < max_matches_per_queue:
+            url = f'https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids?queue={queue_id}&start={start}&count={page_size}'
+            response = requests.get(url, headers=headers, timeout=30)
+            if response.status_code != 200:
+                break
+            batch = response.json()
+            if not isinstance(batch, list) or not batch:
+                break
+            match_ids.extend(batch)
+            if len(batch) < page_size:
+                break
+            start += page_size
 
     # Deduplicate (preserve order)
     seen = set()
     unique_ids = []
-    for m in match_ids:
-        if m not in seen:
-            seen.add(m)
-            unique_ids.append(m)
+    for match_id in match_ids:
+        if match_id not in seen:
+            seen.add(match_id)
+            unique_ids.append(match_id)
 
-    # Start with the current match result (handles API indexing delay)
-    wins = 1 if current_match_won else 0
-    total = 1
+    wins = 0
+    total = 0
 
     for match_id in unique_ids:
-        # Skip current match - already seeded above to avoid double-counting
-        if current_match_id and match_id == current_match_id:
-            continue
         url = f'https://europe.api.riotgames.com/lol/match/v5/matches/{match_id}'
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=30)
         if response.status_code != 200:
             continue
         data = response.json()
@@ -92,18 +101,27 @@ def get_champion_winrate(puuid, champion_name, current_match_won, current_match_
                     total += 1
                     if participant.get('win', False):
                         wins += 1
-                break  # found our player, move to next match
+                break
+
+    # Seed current ranked match only if it's not indexed yet
+    if is_current_ranked and current_match_id and current_match_id not in seen:
+        total += 1
+        if current_match_won:
+            wins += 1
+
+    if total == 0:
+        return None
 
     losses = total - wins
     win_rate = round((wins / total) * 100)
-    return f"{wins}W / {losses}L ({win_rate}%) in last {total} ranked game{'s' if total != 1 else ''}"
+    return f"{wins}W / {losses}L ({win_rate}%) in ranked games ({champion_name})"
 
 
 def get_match_stats(puuid, match_id):
     RIOT_API_KEY = os.getenv('RIOT_API_KEY')  # <-- Move inside the function
     match_url = f'https://europe.api.riotgames.com/lol/match/v5/matches/{match_id}'
     headers = {'X-Riot-Token': RIOT_API_KEY}
-    response = requests.get(match_url, headers=headers)
+    response = requests.get(match_url, headers=headers, timeout=30)
     match_data = response.json()
     print("Match details response:", match_data)
 
